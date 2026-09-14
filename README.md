@@ -71,6 +71,15 @@ cp unifi_decoders.xml /var/ossec/etc/decoders/
 cp unifi_rules.xml /var/ossec/etc/rules/
 ```
 
+> **Rule file load order matters.** `wazuh-analysisd` loads *every* rule file - both the built-in ruleset in `ruleset/rules/` and everything you drop in `etc/rules/` - into **one combined list sorted alphabetically by filename**, ignoring which directory a file actually came from (confirmed by reading `src/config/rules-config.c`: the sort compares basenames only, so `<rule_dir>` order in `ossec.conf` has no effect on load order). Every file in Wazuh's own stock ruleset is named `NNNN-description.xml` (`0010-rules_config.xml` ... `0999-malicious-ioc-rules.xml`), so a custom file whose name *starts with a digit* can sort ahead of a stock file it depends on and silently fail to attach - logged as `(7617)`/`(7619)`/`(7620)` "signature ID not found" warnings that read as if the referenced rule doesn't exist, when it actually just hasn't loaded yet.
+>
+> `unifi_rules.xml` is unaffected by that specific trap as shipped: its rules chain from self-contained anchors (`100102`, `100200`, matched via `<decoded_as>`, not `<if_sid>1</if_sid>`), and because the filename starts with a letter, it naturally sorts after Wazuh's entire (digit-prefixed) stock ruleset. Keep this in mind if you customize:
+>
+> - Don't rename this file to start with a digit (e.g. `0000_unifi_rules.xml`) unless you also make sure it still sorts after the stock ruleset - a `9999_`-style prefix keeps it last; a low prefix like `0000_` will not, and can break it.
+> - Any additional custom rule file that references these rule IDs via `<if_sid>` needs to sort *after* `unifi_rules.xml` in the same combined, directory-agnostic order.
+> - After adding or renaming rule files, dry-run with `sudo /var/ossec/bin/wazuh-analysisd -t` before restarting - it runs the real parser without touching the live daemon - and check for `(7611)`/`(7617)`/`(7619)`/`(7620)` warnings.
+> - Warning counts alone are not a completeness check: `ERRORLIST_MAXSIZE` (50, in `src/analysisd/logmsg.h`) silently evicts the *oldest* pending warning once a single file's failures exceed that count, so a file with many broken rules can show only its last ~50 warnings - looking like a handful of isolated failures when most or all of that file's rules actually failed to attach. The Wazuh API (`GET /rules?filename=...`) and the dashboard's Rules view list rule *definitions* from XML files; they don't prove `analysisd` attached those rules to its runtime tree. Replay representative events with `sudo /var/ossec/bin/wazuh-logtest` and confirm the expected final rule IDs match, and after a restart, confirm expected alerts are actually being produced in normal operation.
+
 Set the decoder and rules permissions appropriately:
 
 ```bash
